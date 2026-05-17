@@ -1,104 +1,86 @@
-const https = require("https");
-const { db } = require("../config/firebase");
-
-// ─── Send via Expo Push API ───────────────────────────────────────────────────
-
-function sendExpoMessages(messages) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify(messages);
-    const options = {
-      hostname: "exp.host",
-      path: "/--/api/v2/push/send",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "Accept-Encoding": "gzip, deflate",
-        "Content-Length": Buffer.byteLength(body),
-      },
-    };
-
-    const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
-        try { resolve(JSON.parse(data)); }
-        catch (_) { resolve(data); }
-      });
-    });
-
-    req.on("error", reject);
-    req.write(body);
-    req.end();
-  });
-}
-
-// ─── Collect all push tokens from Firebase ───────────────────────────────────
-
-async function getAllPushTokens() {
-  const tokensSnapshot = await db.ref("fcmTokens").once("value");
-  if (!tokensSnapshot.exists()) return [];
-  const tokensObj = tokensSnapshot.val();
-  return Object.values(tokensObj).filter(Boolean);
-}
-
-// ─── Send notification to ALL users ──────────────────────────────────────────
+const { admin, db } = require("../config/firebase");
 
 async function sendToAllUsers(title, message, redirect = "") {
-  const tokens = await getAllPushTokens();
-  if (tokens.length === 0) {
-    console.log("No push tokens found");
-    return { sent: 0 };
+  try {
+    const snap = await db.ref("fcmTokens").once("value");
+    if (!snap.exists()) {
+      console.log("No FCM tokens found");
+      return { sent: 0, failure: 0 };
+    }
+
+    const tokens = Object.values(snap.val()).filter(Boolean);
+    if (tokens.length === 0) return { sent: 0, failure: 0 };
+
+    console.log(`Sending to ${tokens.length} devices...`);
+
+    const messages = tokens.map((token) => ({
+      token,
+      notification: { title, body: message },
+      data: { redirect: redirect || "" },
+      android: {
+        priority: "high",
+        notification: {
+          sound: "default",
+          channelId: "default",
+        },
+      },
+    }));
+
+    let success = 0;
+    let failure = 0;
+
+    // FCM allows max 500 per batch
+    for (let i = 0; i < messages.length; i += 500) {
+      const batch = messages.slice(i, i + 500);
+      const response = await admin.messaging().sendEach(batch);
+      success += response.successCount;
+      failure += response.failureCount;
+
+      // Log failed tokens for debugging
+      response.responses.forEach((r, idx) => {
+        if (!r.success) {
+          console.log(`Token failed: ${batch[idx].token} — ${r.error?.message}`);
+        }
+      });
+    }
+
+    console.log(`FCM result: success=${success} failure=${failure}`);
+    return { sent: success, failure };
+  } catch (error) {
+    console.error("sendToAllUsers error:", error.message);
+    return { sent: 0, failure: 0 };
   }
-
-  const messages = tokens.map((token) => ({
-    to: token,
-    sound: "default",
-    title,
-    body: message,
-    data: { redirect },
-    priority: "high",
-  }));
-
-  let sent = 0;
-  for (let i = 0; i < messages.length; i += 100) {
-    const batch = messages.slice(i, i + 100);
-    await sendExpoMessages(batch);
-    sent += batch.length;
-  }
-
-  console.log(`Notifications sent to ${sent} tokens`);
-  return { sent };
 }
-
-// ─── Process scheduled notifications (called by cron) ────────────────────────
 
 async function processScheduledNotifications() {
-  const now = Date.now();
-  const snapshot = await db
-    .ref("notifications")
-    .orderByChild("status")
-    .equalTo("scheduled")
-    .once("value");
+  try {
+    const now = Date.now();
+    const snapshot = await db
+      .ref("notifications")
+      .orderByChild("status")
+      .equalTo("scheduled")
+      .once("value");
 
-  if (!snapshot.exists()) return;
+    if (!snapshot.exists()) return;
 
-  const notifications = snapshot.val();
-  const updates = {};
+    const notifications = snapshot.val();
+    const updates = {};
 
-  for (const [notifId, notif] of Object.entries(notifications)) {
-    if (notif.scheduledTime <= now) {
-      console.log(`Sending scheduled: ${notif.title}`);
-      await sendToAllUsers(notif.title, notif.message, notif.redirect || "");
-      updates[`notifications/${notifId}/status`] = "sent";
-      updates[`notifications/${notifId}/sentTime`] = now;
+    for (const [notifId, notif] of Object.entries(notifications)) {
+      if (notif.scheduledTime <= now) {
+        console.log(`Sending scheduled: ${notif.title}`);
+        await sendToAllUsers(notif.title, notif.message, notif.redirect || "");
+        updates[`notifications/${notifId}/status`] = "sent";
+        updates[`notifications/${notifId}/sentTime`] = now;
+      }
     }
-  }
 
-  if (Object.keys(updates).length > 0) {
-    await db.ref().update(updates);
-    console.log(`Processed ${Object.keys(updates).length / 2} scheduled notifications`);
+    if (Object.keys(updates).length > 0) {
+      await db.ref().update(updates);
+    }
+  } catch (error) {
+    console.error("processScheduledNotifications error:", error.message);
   }
 }
 
-module.exports = { sendToAllUsers, processScheduledNotifications, getAllPushTokens };
+module.exports = { sendToAllUsers, processScheduledNotifications };
