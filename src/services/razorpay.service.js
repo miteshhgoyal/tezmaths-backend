@@ -63,20 +63,28 @@ async function cancelSubscription(userId) {
     throw new Error("No active subscription found for this user.");
   }
 
-  await razorpay.subscriptions.cancel(user.razorpaySubscriptionId, true);
+  // cancel() returns the subscription object with current_end
+  const cancelledSub = await razorpay.subscriptions.cancel(user.razorpaySubscriptionId, true);
+
+  // current_end is Unix seconds → convert to ms. Fallback to existing value if missing.
+  const endDate = cancelledSub.current_end
+    ? cancelledSub.current_end * 1000
+    : (user.subscriptionEndDate || Date.now());
 
   await db.ref(`users/${userId}`).update({
     autoRenew: false,
     subscriptionStatus: "cancelled",
     cancelledAt: Date.now(),
+    subscriptionEndDate: endDate,   // ← accurate end date written here
   });
 
   await writePaymentLog(userId, `cancel_${Date.now()}`, {
     type: "subscription_cancel_requested",
     subscriptionId: user.razorpaySubscriptionId,
+    endDate,
   });
 
-  return { success: true };
+  return { success: true, endDate };
 }
 
 // ─── Create Order (one-time payment fallback) ─────────────────────────────────
@@ -173,7 +181,16 @@ async function handleWebhookEvent(event, payload) {
   }
 
   if (event === "subscription.cancelled") {
-    await userRef.update({ autoRenew: false, subscriptionStatus: "cancelled", cancelledAt: Date.now() });
+    const endDate = subscriptionEntity?.current_end
+      ? subscriptionEntity.current_end * 1000
+      : null;
+
+    await userRef.update({
+      autoRenew: false,
+      subscriptionStatus: "cancelled",
+      cancelledAt: Date.now(),
+      ...(endDate && { subscriptionEndDate: endDate }),  // only overwrite if Razorpay provides it
+    });
     await writePaymentLog(userId, `cancelled_${Date.now()}`, { type: "subscription_cancelled", subscriptionId: subscriptionEntity?.id || entity?.id || null });
     console.log(`Cancelled: ${userId}`);
     return;
