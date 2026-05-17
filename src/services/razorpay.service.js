@@ -134,6 +134,7 @@ async function handleWebhookEvent(event, payload) {
       subscriptionDuration: duration,
       subscriptionPlan: subscriptionEntity?.plan_id || entity?.plan_id || null,
       subscriptionStartDate: Date.now(),
+      subscriptionLabel: duration === "yearly" ? "Yearly" : "Monthly",
     });
     await writePaymentLog(userId, `activated_${Date.now()}`, {
       type: event,
@@ -158,6 +159,7 @@ async function handleWebhookEvent(event, payload) {
       autoRenew: true,
       razorpaySubscriptionId: subscriptionEntity?.id || entity?.id || null,
       subscriptionPlan: subscriptionEntity?.plan_id || entity?.plan_id || null,
+      subscriptionLabel: duration === "yearly" ? "Yearly" : "Monthly",
     });
     await writePaymentLog(userId, `charged_${Date.now()}`, {
       type: "subscription_charged",
