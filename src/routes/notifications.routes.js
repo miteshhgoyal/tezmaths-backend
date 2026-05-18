@@ -13,20 +13,11 @@ router.post("/send", verifyFirebaseToken, async (req, res) => {
       return res.status(400).json({ error: { message: "Title and message are required" } });
     }
 
+    // Client-side admin UI already saves the notification record to Firebase.
+    // Server only sends FCM — no duplicate save here.
     const result = await sendToAllUsers(title, message, redirect);
 
-    // Log to Firebase
-    const notifRef = db.ref("notifications").push();
-    await notifRef.set({
-      title,
-      message,
-      redirect,
-      status: "sent",
-      sentTime: Date.now(),
-      createdAt: Date.now(),
-    });
-
-    return res.json({ result: { ...result, notifId: notifRef.key } });
+    return res.json({ result });
   } catch (error) {
     console.error("send-notification error:", error.message);
     return res.status(500).json({ error: { message: error.message || "Failed to send notification" } });

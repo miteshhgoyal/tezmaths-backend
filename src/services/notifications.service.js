@@ -36,12 +36,41 @@ async function sendToAllUsers(title, message, redirect = "") {
       success += response.successCount;
       failure += response.failureCount;
 
-      // Log failed tokens for debugging
+      // Clean up invalid tokens so they don't accumulate
+      const staleTokens = [];
       response.responses.forEach((r, idx) => {
         if (!r.success) {
-          console.log(`Token failed: ${batch[idx].token} — ${r.error?.message}`);
+          const code = r.error?.code;
+          console.log(`Token failed: ${batch[idx].token} — ${code}`);
+          // These codes mean the token is permanently invalid
+          if (
+            code === 'messaging/invalid-registration-token' ||
+            code === 'messaging/registration-token-not-registered' ||
+            code === 'messaging/invalid-argument'
+          ) {
+            staleTokens.push(batch[idx].token);
+          }
         }
       });
+
+      // Remove stale tokens from fcmTokens node
+      if (staleTokens.length > 0) {
+        try {
+          const snap = await db.ref("fcmTokens").once("value");
+          if (snap.exists()) {
+            const removeOps = [];
+            snap.forEach((child) => {
+              if (staleTokens.includes(child.val())) {
+                removeOps.push(db.ref(`fcmTokens/${child.key}`).remove());
+              }
+            });
+            await Promise.all(removeOps);
+            console.log(`Removed ${removeOps.length} stale token(s)`);
+          }
+        } catch (cleanupErr) {
+          console.error("Stale token cleanup failed:", cleanupErr.message);
+        }
+      }
     }
 
     console.log(`FCM result: success=${success} failure=${failure}`);
