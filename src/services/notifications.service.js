@@ -17,11 +17,39 @@ async function sendToAllUsers(title, message, redirect = "") {
       token,
       notification: { title, body: message },
       data: { redirect: redirect || "" },
+
+      // ── Android config ────────────────────────────────────────────────────────
       android: {
-        priority: "high",
+        priority: "high",                   // wake up device even in Doze mode
         notification: {
           sound: "default",
-          channelId: "default",
+          channelId: "default",           // matches channel created in notificationService.js
+          priority: "high",
+          defaultSound: true,
+          defaultVibrateTimings: true,
+          notificationCount: 1,
+        },
+      },
+
+      // ── iOS / APNs config ─────────────────────────────────────────────────────
+      // CRITICAL: Without this block, iOS devices receive nothing.
+      // FCM requires explicit APNs headers for iOS push delivery.
+      apns: {
+        headers: {
+          "apns-priority": "10",          // 10 = immediate delivery (vs 5 = power-saving)
+          "apns-push-type": "alert",      // required for iOS 13+
+        },
+        payload: {
+          aps: {
+            alert: {
+              title,
+              body: message,
+            },
+            sound: "default",
+            badge: 1,
+            "mutable-content": 1,       // allows notification service extensions
+            "content-available": 1,     // wake app in background for data processing
+          },
         },
       },
     }));
