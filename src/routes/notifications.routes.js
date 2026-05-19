@@ -17,9 +17,17 @@ router.post("/send", verifyFirebaseToken, async (req, res) => {
     // Server only sends FCM — no duplicate save here.
     const result = await sendToAllUsers(title, message, redirect);
 
-    if (!result || (result.sent === 0 && result.failure === 0)) {
+    if (!result) {
       return res.status(500).json({
-        error: { message: "No notifications were sent. Check FCM token registration and server logs." },
+        error: { message: "sendToAllUsers returned null. Check server logs." },
+      });
+    }
+
+    // Zero tokens is NOT a server error — return 200 with a warning
+    if (result.sent === 0 && result.failure === 0) {
+      return res.status(200).json({
+        result,
+        warning: "No FCM tokens found in database. Users may not have granted notification permission yet.",
       });
     }
 
