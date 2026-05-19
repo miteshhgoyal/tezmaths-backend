@@ -104,8 +104,8 @@ async function sendToAllUsers(title, message, redirect = "") {
     console.log(`FCM result: success=${success} failure=${failure}`);
     return { sent: success, failure };
   } catch (error) {
-    console.error("sendToAllUsers error:", error.message);
-    return { sent: 0, failure: 0 };
+    console.error("sendToAllUsers error:", error);
+    throw error;
   }
 }
 
