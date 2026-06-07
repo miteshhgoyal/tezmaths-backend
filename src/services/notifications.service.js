@@ -8,7 +8,17 @@ async function sendToAllUsers(title, message, redirect = "") {
       return { sent: 0, failure: 0 };
     }
 
-    const tokens = Object.values(snap.val()).filter(Boolean);
+    // Build a reverse map { token → userId } for efficient stale token cleanup
+    // This avoids re-reading the entire fcmTokens node after sending
+    const tokenToUser = {};
+    const rawData = snap.val();
+    for (const [userId, token] of Object.entries(rawData)) {
+      if (token) {
+        tokenToUser[token] = userId;
+      }
+    }
+
+    const tokens = Object.keys(tokenToUser);
     if (tokens.length === 0) return { sent: 0, failure: 0 };
 
     console.log(`Sending to ${tokens.length} devices...`);
@@ -23,7 +33,7 @@ async function sendToAllUsers(title, message, redirect = "") {
         priority: "high",                   // wake up device even in Doze mode
         notification: {
           sound: "default",
-          channelId: "default",           // matches channel created in notificationService.js
+          channelId: "default-v2",           // MUST match channel created in notificationService.js
           priority: "high",
           defaultSound: true,
           defaultVibrateTimings: true,
@@ -64,37 +74,38 @@ async function sendToAllUsers(title, message, redirect = "") {
       success += response.successCount;
       failure += response.failureCount;
 
-      // Clean up invalid tokens so they don't accumulate
-      const staleTokens = [];
+      // Clean up invalid tokens using the pre-built reverse map
+      // No need to re-read the entire fcmTokens node — O(1) lookup per failed token
+      const removeOps = [];
       response.responses.forEach((r, idx) => {
         if (!r.success) {
           const code = r.error?.code;
-          console.log(`Token failed: ${batch[idx].token} — ${code}`);
+          const failedToken = batch[idx].token;
+          console.log(`Token failed: ${failedToken.slice(0, 20)}... — ${code}`);
+
           // These codes mean the token is permanently invalid
           if (
             code === 'messaging/invalid-registration-token' ||
             code === 'messaging/registration-token-not-registered' ||
             code === 'messaging/invalid-argument'
           ) {
-            staleTokens.push(batch[idx].token);
+            const userId = tokenToUser[failedToken];
+            if (userId) {
+              removeOps.push(
+                db.ref(`fcmTokens/${userId}`).remove(),
+                db.ref(`users/${userId}/fcmToken`).remove()
+              );
+              console.log(`Queued stale token removal for user: ${userId}`);
+            }
           }
         }
       });
 
-      // Remove stale tokens from fcmTokens node
-      if (staleTokens.length > 0) {
+      // Execute all removals in parallel
+      if (removeOps.length > 0) {
         try {
-          const snap = await db.ref("fcmTokens").once("value");
-          if (snap.exists()) {
-            const removeOps = [];
-            snap.forEach((child) => {
-              if (staleTokens.includes(child.val())) {
-                removeOps.push(db.ref(`fcmTokens/${child.key}`).remove());
-              }
-            });
-            await Promise.all(removeOps);
-            console.log(`Removed ${removeOps.length} stale token(s)`);
-          }
+          await Promise.all(removeOps);
+          console.log(`Removed ${removeOps.length / 2} stale token(s)`);
         } catch (cleanupErr) {
           console.error("Stale token cleanup failed:", cleanupErr.message);
         }
