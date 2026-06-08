@@ -2,19 +2,20 @@ const { admin, db } = require("../config/firebase");
 
 async function sendToAllUsers(title, message, redirect = "") {
   try {
-    const snap = await db.ref("fcmTokens").once("value");
+    // Pull tokens from the 'users' node because older app versions 
+    // only saved it there, or the fcmTokens node might have been cleared.
+    const snap = await db.ref("users").once("value");
     if (!snap.exists()) {
       console.log("No FCM tokens found");
       return { sent: 0, failure: 0 };
     }
 
-    // Build a reverse map { token → userId } for efficient stale token cleanup
-    // This avoids re-reading the entire fcmTokens node after sending
     const tokenToUser = {};
     const rawData = snap.val();
-    for (const [userId, token] of Object.entries(rawData)) {
-      if (token) {
-        tokenToUser[token] = userId;
+    
+    for (const [userId, userData] of Object.entries(rawData)) {
+      if (userData && userData.fcmToken) {
+        tokenToUser[userData.fcmToken] = userId;
       }
     }
 
